@@ -68,6 +68,28 @@ void main() {
       expect(find.byType(DummyScreen), findsOneWidget);
     });
 
+    testWidgets('pushReplacement and replace when only one matches',
+        (WidgetTester tester) async {
+      final List<GoRoute> routes = <GoRoute>[
+        GoRoute(name: '1', path: '/', builder: dummy),
+        GoRoute(name: '2', path: '/a', builder: dummy),
+        GoRoute(name: '3', path: '/b', builder: dummy),
+      ];
+
+      final GoRouter router = await createRouter(routes, tester);
+      expect(router.routerDelegate.currentConfiguration.uri.path, '/');
+
+      router.replace<void>('/a');
+      await tester.pumpAndSettle();
+      // When the imperative match is the only match in the route match list,
+      // it should update the uri.
+      expect(router.routerDelegate.currentConfiguration.uri.path, '/a');
+
+      router.pushReplacement<void>('/b');
+      await tester.pumpAndSettle();
+      expect(router.routerDelegate.currentConfiguration.uri.path, '/b');
+    });
+
     test('empty path', () {
       expect(() {
         GoRoute(path: '');
@@ -258,6 +280,95 @@ void main() {
       expect(find.byType(DummyScreen), findsOneWidget);
     });
 
+    testWidgets(
+        'match top level route when location has scheme/host and has trailing /',
+        (WidgetTester tester) async {
+      final List<GoRoute> routes = <GoRoute>[
+        GoRoute(
+          path: '/',
+          builder: (BuildContext context, GoRouterState state) =>
+              const HomeScreen(),
+        ),
+      ];
+
+      final GoRouter router = await createRouter(routes, tester);
+      router.go('https://www.domain.com/?bar=baz');
+      await tester.pumpAndSettle();
+      final List<RouteMatchBase> matches =
+          router.routerDelegate.currentConfiguration.matches;
+      expect(matches, hasLength(1));
+      expect(matches.first.matchedLocation, '/');
+      expect(find.byType(HomeScreen), findsOneWidget);
+    });
+
+    testWidgets(
+        'match top level route when location has scheme/host and has trailing / (2)',
+        (WidgetTester tester) async {
+      final List<GoRoute> routes = <GoRoute>[
+        GoRoute(
+          path: '/',
+          builder: (BuildContext context, GoRouterState state) =>
+              const HomeScreen(),
+        ),
+        GoRoute(
+          path: '/login',
+          builder: (BuildContext context, GoRouterState state) =>
+              const LoginScreen(),
+        ),
+      ];
+
+      final GoRouter router = await createRouter(routes, tester);
+      router.go('https://www.domain.com/login/');
+      await tester.pumpAndSettle();
+      final List<RouteMatchBase> matches =
+          router.routerDelegate.currentConfiguration.matches;
+      expect(matches, hasLength(1));
+      expect(matches.first.matchedLocation, '/login');
+      expect(find.byType(LoginScreen), findsOneWidget);
+    });
+
+    testWidgets(
+        'match top level route when location has scheme/host and has trailing / (3)',
+        (WidgetTester tester) async {
+      final List<GoRoute> routes = <GoRoute>[
+        GoRoute(
+            path: '/profile',
+            builder: dummy,
+            redirect: (_, __) => '/profile/foo'),
+        GoRoute(path: '/profile/:kind', builder: dummy),
+      ];
+
+      final GoRouter router = await createRouter(routes, tester);
+      router.go('https://www.domain.com/profile/');
+      await tester.pumpAndSettle();
+      final List<RouteMatchBase> matches =
+          router.routerDelegate.currentConfiguration.matches;
+      expect(matches, hasLength(1));
+      expect(matches.first.matchedLocation, '/profile/foo');
+      expect(find.byType(DummyScreen), findsOneWidget);
+    });
+
+    testWidgets(
+        'match top level route when location has scheme/host and has trailing / (4)',
+        (WidgetTester tester) async {
+      final List<GoRoute> routes = <GoRoute>[
+        GoRoute(
+            path: '/profile',
+            builder: dummy,
+            redirect: (_, __) => '/profile/foo'),
+        GoRoute(path: '/profile/:kind', builder: dummy),
+      ];
+
+      final GoRouter router = await createRouter(routes, tester);
+      router.go('https://www.domain.com/profile/?bar=baz');
+      await tester.pumpAndSettle();
+      final List<RouteMatchBase> matches =
+          router.routerDelegate.currentConfiguration.matches;
+      expect(matches, hasLength(1));
+      expect(matches.first.matchedLocation, '/profile/foo');
+      expect(find.byType(DummyScreen), findsOneWidget);
+    });
+
     testWidgets('repeatedly pops imperative route does not crash',
         (WidgetTester tester) async {
       // Regression test for https://github.com/flutter/flutter/issues/123369.
@@ -307,6 +418,67 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byKey(dialog), findsNothing);
       expect(find.byKey(settings), findsOneWidget);
+    });
+
+    testWidgets('android back button pop in correct order',
+        (WidgetTester tester) async {
+      // Regression test for https://github.com/flutter/flutter/issues/141906.
+      final List<RouteBase> routes = <RouteBase>[
+        GoRoute(
+            path: '/',
+            builder: (_, __) => const Text('home'),
+            routes: <RouteBase>[
+              ShellRoute(
+                builder: (
+                  BuildContext context,
+                  GoRouterState state,
+                  Widget child,
+                ) {
+                  return Column(
+                    children: <Widget>[
+                      const Text('shell'),
+                      child,
+                    ],
+                  );
+                },
+                routes: <GoRoute>[
+                  GoRoute(
+                    path: 'page',
+                    builder: (BuildContext context, __) {
+                      return TextButton(
+                        onPressed: () {
+                          Navigator.of(context, rootNavigator: true).push(
+                            MaterialPageRoute<void>(
+                                builder: (BuildContext context) {
+                              return const Text('pageless');
+                            }),
+                          );
+                        },
+                        child: const Text('page'),
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ]),
+      ];
+      final GoRouter router =
+          await createRouter(routes, tester, initialLocation: '/page');
+      expect(find.text('shell'), findsOneWidget);
+      expect(find.text('page'), findsOneWidget);
+
+      await tester.tap(find.text('page'));
+      await tester.pumpAndSettle();
+      expect(find.text('shell'), findsNothing);
+      expect(find.text('page'), findsNothing);
+      expect(find.text('pageless'), findsOneWidget);
+
+      final bool result = await router.routerDelegate.popRoute();
+      expect(result, isTrue);
+      await tester.pumpAndSettle();
+      expect(find.text('shell'), findsOneWidget);
+      expect(find.text('page'), findsOneWidget);
+      expect(find.text('pageless'), findsNothing);
     });
 
     testWidgets('can correctly pop stacks of repeated pages',
@@ -879,6 +1051,8 @@ void main() {
   testWidgets('does not crash when inherited widget changes',
       (WidgetTester tester) async {
     final ValueNotifier<String> notifier = ValueNotifier<String>('initial');
+
+    addTearDown(notifier.dispose);
     final List<GoRoute> routes = <GoRoute>[
       GoRoute(
           path: '/',
@@ -896,6 +1070,7 @@ void main() {
     final GoRouter router = GoRouter(
       routes: routes,
     );
+    addTearDown(router.dispose);
     await tester.pumpWidget(
       MaterialApp.router(
         routerConfig: router,
@@ -1017,6 +1192,47 @@ void main() {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(SystemChannels.navigation, null);
       log.clear();
+    });
+
+    testWidgets(
+        'on push shell route with optionURLReflectImperativeAPIs = true',
+        (WidgetTester tester) async {
+      GoRouter.optionURLReflectsImperativeAPIs = true;
+      final List<RouteBase> routes = <RouteBase>[
+        GoRoute(
+          path: '/',
+          builder: (BuildContext context, GoRouterState state) =>
+              const DummyScreen(),
+          routes: <RouteBase>[
+            ShellRoute(
+              builder:
+                  (BuildContext context, GoRouterState state, Widget child) =>
+                      child,
+              routes: <RouteBase>[
+                GoRoute(
+                  path: 'c',
+                  builder: (BuildContext context, GoRouterState state) =>
+                      const DummyScreen(),
+                )
+              ],
+            ),
+          ],
+        ),
+      ];
+
+      final GoRouter router = await createRouter(routes, tester);
+
+      log.clear();
+      router.push('/c?foo=bar');
+      final RouteMatchListCodec codec =
+          RouteMatchListCodec(router.configuration);
+      await tester.pumpAndSettle();
+      expect(log, <Object>[
+        isMethodCall('selectMultiEntryHistory', arguments: null),
+        IsRouteUpdateCall('/c?foo=bar', false,
+            codec.encode(router.routerDelegate.currentConfiguration)),
+      ]);
+      GoRouter.optionURLReflectsImperativeAPIs = false;
     });
 
     testWidgets('on push with optionURLReflectImperativeAPIs = true',
@@ -1301,10 +1517,7 @@ void main() {
       expect(find.byKey(const ValueKey<String>('home')), findsOneWidget);
 
       router.routeInformationProvider.didPushRouteInformation(
-          // TODO(chunhtai): remove this ignore and migrate the code
-          // https://github.com/flutter/flutter/issues/124045.
-          // ignore: deprecated_member_use
-          RouteInformation(location: location, state: state));
+          RouteInformation(uri: Uri.parse(location), state: state));
       await tester.pumpAndSettle();
       // Make sure it has all the imperative routes.
       expect(find.byKey(const ValueKey<String>('settings-1')), findsOneWidget);
@@ -2332,6 +2545,94 @@ void main() {
       expect(
           router.routerDelegate.currentConfiguration.uri.toString(), '/other');
     });
+
+    testWidgets('redirect when go to a shell route',
+        (WidgetTester tester) async {
+      final List<RouteBase> routes = <RouteBase>[
+        ShellRoute(
+          redirect: (BuildContext context, GoRouterState state) => '/dummy',
+          builder: (BuildContext context, GoRouterState state, Widget child) =>
+              Scaffold(appBar: AppBar(), body: child),
+          routes: <RouteBase>[
+            GoRoute(
+              path: '/other',
+              builder: (BuildContext context, GoRouterState state) =>
+                  const DummyScreen(),
+            ),
+            GoRoute(
+              path: '/other2',
+              builder: (BuildContext context, GoRouterState state) =>
+                  const DummyScreen(),
+            ),
+          ],
+        ),
+        GoRoute(
+          path: '/dummy',
+          builder: (BuildContext context, GoRouterState state) =>
+              const DummyScreen(),
+        ),
+      ];
+
+      final GoRouter router = await createRouter(routes, tester);
+
+      for (final String shellRoute in <String>['/other', '/other2']) {
+        router.go(shellRoute);
+        await tester.pump();
+        expect(
+          router.routerDelegate.currentConfiguration.uri.toString(),
+          '/dummy',
+        );
+      }
+    });
+
+    testWidgets('redirect when go to a stateful shell route',
+        (WidgetTester tester) async {
+      final List<RouteBase> routes = <RouteBase>[
+        StatefulShellRoute.indexedStack(
+          redirect: (BuildContext context, GoRouterState state) => '/dummy',
+          builder: (BuildContext context, GoRouterState state,
+              StatefulNavigationShell navigationShell) {
+            return navigationShell;
+          },
+          branches: <StatefulShellBranch>[
+            StatefulShellBranch(
+              routes: <RouteBase>[
+                GoRoute(
+                  path: '/other',
+                  builder: (BuildContext context, GoRouterState state) =>
+                      const DummyScreen(),
+                ),
+              ],
+            ),
+            StatefulShellBranch(
+              routes: <RouteBase>[
+                GoRoute(
+                  path: '/other2',
+                  builder: (BuildContext context, GoRouterState state) =>
+                      const DummyScreen(),
+                ),
+              ],
+            ),
+          ],
+        ),
+        GoRoute(
+          path: '/dummy',
+          builder: (BuildContext context, GoRouterState state) =>
+              const DummyScreen(),
+        ),
+      ];
+
+      final GoRouter router = await createRouter(routes, tester);
+
+      for (final String shellRoute in <String>['/other', '/other2']) {
+        router.go(shellRoute);
+        await tester.pump();
+        expect(
+          router.routerDelegate.currentConfiguration.uri.toString(),
+          '/dummy',
+        );
+      }
+    });
   });
 
   group('initial location', () {
@@ -2435,10 +2736,7 @@ void main() {
         routes,
         tester,
       );
-      // TODO(chunhtai): remove this ignore and migrate the code
-      // https://github.com/flutter/flutter/issues/124045.
-      // ignore: deprecated_member_use
-      expect(router.routeInformationProvider.value.location, '/dummy');
+      expect(router.routeInformationProvider.value.uri.path, '/dummy');
       TestWidgetsFlutterBinding.instance.platformDispatcher
           .clearDefaultRouteNameTestValue();
     });
@@ -3129,6 +3427,7 @@ void main() {
         (WidgetTester tester) async {
       final GoRouterNamedLocationSpy router =
           GoRouterNamedLocationSpy(routes: routes);
+      addTearDown(router.dispose);
       await tester.pumpWidget(
         MaterialApp.router(
           routerConfig: router,
@@ -3147,6 +3446,7 @@ void main() {
 
     testWidgets('calls [go] on closest GoRouter', (WidgetTester tester) async {
       final GoRouterGoSpy router = GoRouterGoSpy(routes: routes);
+      addTearDown(router.dispose);
       await tester.pumpWidget(
         MaterialApp.router(
           routerConfig: router,
@@ -3164,6 +3464,7 @@ void main() {
     testWidgets('calls [goNamed] on closest GoRouter',
         (WidgetTester tester) async {
       final GoRouterGoNamedSpy router = GoRouterGoNamedSpy(routes: routes);
+      addTearDown(router.dispose);
       await tester.pumpWidget(
         MaterialApp.router(
           routerConfig: router,
@@ -3185,6 +3486,7 @@ void main() {
     testWidgets('calls [push] on closest GoRouter',
         (WidgetTester tester) async {
       final GoRouterPushSpy router = GoRouterPushSpy(routes: routes);
+      addTearDown(router.dispose);
       await tester.pumpWidget(
         MaterialApp.router(
           routerConfig: router,
@@ -3202,6 +3504,7 @@ void main() {
     testWidgets('calls [push] on closest GoRouter and waits for result',
         (WidgetTester tester) async {
       final GoRouterPushSpy router = GoRouterPushSpy(routes: routes);
+      addTearDown(router.dispose);
       await tester.pumpWidget(
         MaterialApp.router(
           routeInformationProvider: router.routeInformationProvider,
@@ -3222,6 +3525,7 @@ void main() {
     testWidgets('calls [pushNamed] on closest GoRouter',
         (WidgetTester tester) async {
       final GoRouterPushNamedSpy router = GoRouterPushNamedSpy(routes: routes);
+      addTearDown(router.dispose);
       await tester.pumpWidget(
         MaterialApp.router(
           routerConfig: router,
@@ -3243,6 +3547,7 @@ void main() {
     testWidgets('calls [pushNamed] on closest GoRouter and waits for result',
         (WidgetTester tester) async {
       final GoRouterPushNamedSpy router = GoRouterPushNamedSpy(routes: routes);
+      addTearDown(router.dispose);
       await tester.pumpWidget(
         MaterialApp.router(
           routeInformationProvider: router.routeInformationProvider,
@@ -3266,6 +3571,7 @@ void main() {
 
     testWidgets('calls [pop] on closest GoRouter', (WidgetTester tester) async {
       final GoRouterPopSpy router = GoRouterPopSpy(routes: routes);
+      addTearDown(router.dispose);
       await tester.pumpWidget(
         MaterialApp.router(
           routerConfig: router,
@@ -3280,6 +3586,7 @@ void main() {
     testWidgets('calls [pop] on closest GoRouter with result',
         (WidgetTester tester) async {
       final GoRouterPopSpy router = GoRouterPopSpy(routes: routes);
+      addTearDown(router.dispose);
       await tester.pumpWidget(
         MaterialApp.router(
           routerConfig: router,
@@ -3324,6 +3631,53 @@ void main() {
 
       await createRouter(routes, tester, initialLocation: '/b');
       expect(find.text('Screen B'), findsOneWidget);
+    });
+
+    testWidgets('can complete leaf route', (WidgetTester tester) async {
+      Future<bool?>? routeFuture;
+      final List<RouteBase> routes = <RouteBase>[
+        GoRoute(
+          path: '/',
+          builder: (BuildContext context, GoRouterState state) {
+            return Scaffold(
+              body: TextButton(
+                onPressed: () async {
+                  routeFuture = context.push<bool>('/a');
+                },
+                child: const Text('press'),
+              ),
+            );
+          },
+        ),
+        ShellRoute(
+          builder: (BuildContext context, GoRouterState state, Widget child) {
+            return Scaffold(
+              body: child,
+            );
+          },
+          routes: <RouteBase>[
+            GoRoute(
+              path: '/a',
+              builder: (BuildContext context, GoRouterState state) {
+                return const Scaffold(
+                  body: Text('Screen A'),
+                );
+              },
+            ),
+          ],
+        ),
+      ];
+
+      final GoRouter router = await createRouter(routes, tester);
+      expect(find.text('press'), findsOneWidget);
+
+      await tester.tap(find.text('press'));
+      await tester.pumpAndSettle();
+      expect(find.text('Screen A'), findsOneWidget);
+
+      router.pop<bool>(true);
+      final bool? result = await routeFuture;
+      expect(result, isTrue);
     });
 
     testWidgets(
@@ -3683,6 +4037,50 @@ void main() {
       router.go('/a/detailA');
       await tester.pumpAndSettle();
       expect(statefulWidgetKey.currentState?.counter, equals(0));
+    });
+
+    testWidgets(
+        'Navigates to correct nested navigation tree in StatefulShellRoute '
+        'and maintains path parameters', (WidgetTester tester) async {
+      StatefulNavigationShell? routeState;
+
+      final List<RouteBase> routes = <RouteBase>[
+        GoRoute(
+            path: '/:id',
+            builder: (_, __) => const Placeholder(),
+            routes: <RouteBase>[
+              StatefulShellRoute.indexedStack(
+                builder: (BuildContext context, GoRouterState state,
+                    StatefulNavigationShell navigationShell) {
+                  routeState = navigationShell;
+                  return navigationShell;
+                },
+                branches: <StatefulShellBranch>[
+                  StatefulShellBranch(routes: <GoRoute>[
+                    GoRoute(
+                      path: 'a',
+                      builder: (BuildContext context, GoRouterState state) =>
+                          Text('a id is ${state.pathParameters['id']}'),
+                    ),
+                  ]),
+                  StatefulShellBranch(routes: <GoRoute>[
+                    GoRoute(
+                      path: 'b',
+                      builder: (BuildContext context, GoRouterState state) =>
+                          Text('b id is ${state.pathParameters['id']}'),
+                    ),
+                  ]),
+                ],
+              ),
+            ])
+      ];
+
+      await createRouter(routes, tester, initialLocation: '/123/a');
+      expect(find.text('a id is 123'), findsOneWidget);
+
+      routeState!.goBranch(1);
+      await tester.pumpAndSettle();
+      expect(find.text('b id is 123'), findsOneWidget);
     });
 
     testWidgets('Maintains state for nested StatefulShellRoute',
@@ -4232,6 +4630,7 @@ void main() {
               GoRoute(path: '/a', builder: (_, __) => const DummyScreen()),
             ],
           );
+          addTearDown(router.dispose);
 
           await tester.pumpWidget(
             MaterialApp.router(
@@ -4294,6 +4693,7 @@ void main() {
               ),
             ],
           );
+          addTearDown(router.dispose);
 
           await tester.pumpWidget(
             MaterialApp.router(
@@ -4360,6 +4760,7 @@ void main() {
               ),
             ],
           );
+          addTearDown(router.dispose);
 
           await tester.pumpWidget(
             MaterialApp.router(
@@ -4416,6 +4817,7 @@ void main() {
             ),
           ],
         );
+        addTearDown(router.dispose);
 
         await tester.pumpWidget(MaterialApp.router(routerConfig: router));
 
@@ -4485,6 +4887,7 @@ void main() {
               ),
             ],
           );
+          addTearDown(router.dispose);
 
           await tester.pumpWidget(
             MaterialApp.router(
@@ -4555,6 +4958,7 @@ void main() {
             ),
           ],
         );
+        addTearDown(router.dispose);
 
         await tester.pumpWidget(MaterialApp.router(routerConfig: router));
 
